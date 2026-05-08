@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg[binary]
+pgvector
+python-jose[cryptography]
+python-multipart
+pydantic-settings
+ollama
+sqlparse
+streamlit
+requests

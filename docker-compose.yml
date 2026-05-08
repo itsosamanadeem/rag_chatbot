@@ -1,0 +1,16 @@
+services:
+  db:
+    image: ankane/pgvector:latest
+    environment:
+      POSTGRES_DB: testdb
+      POSTGRES_USER: aiuser
+      POSTGRES_PASSWORD: aiuser
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./ai_db-data:/var/lib/postgresql/data/pgdata
+    restart: always
+
+volumes:
+  ai_db-data:
