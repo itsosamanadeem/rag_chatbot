@@ -10,3 +10,6 @@ ollama
 sqlparse
 streamlit
 requests
+langchain-postgres
+psycopg2
+psycopg2-binary

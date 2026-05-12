@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     insert_rows_per_chunk: int = 200
     insert_max_chunk_chars: int = 12000
     ingest_only_dml: bool = True
+    TOP_K: int = 5
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
