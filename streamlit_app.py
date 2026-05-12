@@ -181,6 +181,10 @@ with detail_col:
             with st.expander("Relevant tables"):
                 st.write(relevant_tables)
 
+        if result.get("shortcut_error"):
+            with st.expander("Shortcut fallback"):
+                st.code(str(result["shortcut_error"]), language="text")
+
         with st.expander("Raw answer"):
             st.code(str(result.get("raw_answer", "")), language="text")
 

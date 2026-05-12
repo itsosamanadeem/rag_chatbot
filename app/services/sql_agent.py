@@ -8,10 +8,14 @@ from langchain.agents import create_agent
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_community.utilities import SQLDatabase
 from langchain_core.messages import HumanMessage, SystemMessage
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.services.llm import get_llm
+
+
+CURRENT_YEAR = 2026
 
 
 def _ms(start: float) -> float:
@@ -74,6 +78,29 @@ not present in the raw answer or trace."""
     return str(response.content).strip()
 
 
+def _humanize_query_result(question: str, raw_result: dict[str, Any]) -> str:
+    llm = get_llm(settings.response_model)
+    response = llm.invoke(
+        [
+            SystemMessage(
+                content=(
+                    "You explain database query results in plain business language. "
+                    "Use only the provided data. Preserve numbers exactly."
+                )
+            ),
+            HumanMessage(
+                content=(
+                    f"User question:\n{question}\n\n"
+                    f"Query result:\n{raw_result}\n\n"
+                    "Write a concise, human-readable answer. Mention the date range if present. "
+                    "If the result is zero or empty, say that clearly."
+                )
+            ),
+        ]
+    )
+    return str(response.content).strip()
+
+
 @lru_cache(maxsize=8)
 def _discover_table_names(db_url: str) -> tuple[str, ...]:
     engine = create_engine(db_url, pool_pre_ping=True, future=True)
@@ -118,6 +145,128 @@ def _select_relevant_tables(question: str, table_names: tuple[str, ...]) -> tupl
     if any(term in lower_question for term in purchase_terms):
         return _purchase_table_shortlist(table_names)
     return ()
+
+
+def _has_tables(table_names: tuple[str, ...], required: set[str]) -> bool:
+    return required.issubset(set(table_names))
+
+
+def _product_name_expression(db_url: str) -> str:
+    engine = create_engine(db_url, pool_pre_ping=True, future=True)
+    try:
+        inspector = inspect(engine)
+        columns = inspector.get_columns("product_template")
+        name_column = next((column for column in columns if column.get("name") == "name"), None)
+        column_type = str(name_column.get("type", "")).lower() if name_column else ""
+    finally:
+        engine.dispose()
+
+    if "json" in column_type:
+        return "COALESCE(pt.name->>'en_US', pt.name->>'en_GB', pt.name::text)"
+    return "pt.name::text"
+
+
+def _matches_total_purchases(question: str) -> bool:
+    lower_question = question.lower()
+    return (
+        any(term in lower_question for term in ("total", "sum", "amount", "value"))
+        and any(term in lower_question for term in ("purchase", "purchases", "buy", "bought"))
+    )
+
+
+def _matches_most_purchased_product(question: str) -> bool:
+    lower_question = question.lower()
+    product_terms = ("product", "item")
+    purchase_terms = ("buy", "bought", "purchase", "purchases", "purchased")
+    ranking_terms = ("most", "top", "highest", "maximum", "max")
+    return (
+        any(term in lower_question for term in product_terms)
+        and any(term in lower_question for term in purchase_terms)
+        and any(term in lower_question for term in ranking_terms)
+    )
+
+
+def _execute_odoo_total_purchases(db_url: str) -> dict[str, Any]:
+    query = text(
+        """
+        SELECT
+            COALESCE(SUM(amount_total), 0) AS total_purchases,
+            COUNT(*) AS purchase_order_count
+        FROM purchase_order
+        WHERE date_order >= CAST(:start_date AS DATE)
+          AND date_order < CAST(:end_date AS DATE)
+          AND state IN ('purchase', 'done')
+        """
+    )
+    params = {
+        "start_date": f"{CURRENT_YEAR}-01-01",
+        "end_date": f"{CURRENT_YEAR + 1}-01-01",
+    }
+    engine = create_engine(db_url, pool_pre_ping=True, future=True)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(query, params).mappings().one()
+    finally:
+        engine.dispose()
+    return {
+        "metric": "total_purchases_this_year",
+        "date_range": f"{CURRENT_YEAR}-01-01 to {CURRENT_YEAR}-12-31",
+        "sql": str(query),
+        "data": {
+            "total_purchases": float(row["total_purchases"] or 0),
+            "purchase_order_count": int(row["purchase_order_count"] or 0),
+        },
+    }
+
+
+def _execute_odoo_most_purchased_product(db_url: str) -> dict[str, Any]:
+    product_name = _product_name_expression(db_url)
+    query = text(
+        f"""
+        SELECT
+            {product_name} AS product_name,
+            SUM(pol.product_qty) AS total_quantity,
+            COUNT(DISTINCT po.id) AS purchase_order_count
+        FROM purchase_order_line pol
+        JOIN purchase_order po ON po.id = pol.order_id
+        JOIN product_product pp ON pp.id = pol.product_id
+        JOIN product_template pt ON pt.id = pp.product_tmpl_id
+        WHERE po.date_order >= CAST(:start_date AS DATE)
+          AND po.date_order < CAST(:end_date AS DATE)
+          AND po.state IN ('purchase', 'done')
+        GROUP BY {product_name}
+        ORDER BY total_quantity DESC
+        LIMIT 1
+        """
+    )
+    params = {
+        "start_date": f"{CURRENT_YEAR}-01-01",
+        "end_date": f"{CURRENT_YEAR + 1}-01-01",
+    }
+    engine = create_engine(db_url, pool_pre_ping=True, future=True)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(query, params).mappings().first()
+    finally:
+        engine.dispose()
+
+    return {
+        "metric": "most_purchased_product_this_year",
+        "date_range": f"{CURRENT_YEAR}-01-01 to {CURRENT_YEAR}-12-31",
+        "sql": str(query),
+        "data": dict(row) if row else None,
+    }
+
+
+def _try_odoo_purchase_shortcut(question: str, db_url: str, table_names: tuple[str, ...]) -> dict[str, Any] | None:
+    if _matches_total_purchases(question) and _has_tables(table_names, {"purchase_order"}):
+        return _execute_odoo_total_purchases(db_url)
+    if _matches_most_purchased_product(question) and _has_tables(
+        table_names,
+        {"purchase_order", "purchase_order_line", "product_product", "product_template"},
+    ):
+        return _execute_odoo_most_purchased_product(db_url)
+    return None
 
 
 @lru_cache(maxsize=16)
@@ -176,6 +325,37 @@ def ask_sql_agent(question: str, db_url: str | None = None, top_k: int | None = 
     selected_db_url = db_url or settings.database_url
     selected_top_k = top_k or settings.sql_agent_top_k
     table_names = _discover_table_names(selected_db_url)
+    shortcut_error = None
+    try:
+        shortcut_result = _try_odoo_purchase_shortcut(question, selected_db_url, table_names)
+    except SQLAlchemyError as exc:
+        shortcut_result = None
+        shortcut_error = str(exc)
+    if shortcut_result is not None:
+        response_started = perf_counter()
+        answer = _humanize_query_result(question, shortcut_result)
+        response_ms = _ms(response_started)
+        return {
+            "answer": answer,
+            "raw_answer": shortcut_result,
+            "dialect": "postgresql",
+            "agent_model": "deterministic_odoo_sql",
+            "response_model": settings.response_model,
+            "relevant_tables": _purchase_table_shortlist(table_names),
+            "messages": [
+                {
+                    "role": "tool",
+                    "name": "deterministic_odoo_purchase_query",
+                    "content": shortcut_result,
+                }
+            ],
+            "timings_ms": {
+                "sql_agent": 0,
+                "response_generation": response_ms,
+                "total": _ms(started),
+            },
+        }
+
     relevant_tables = _select_relevant_tables(question, table_names)
     db = _get_database(selected_db_url, relevant_tables)
     llm = get_llm()
@@ -203,6 +383,7 @@ def ask_sql_agent(question: str, db_url: str | None = None, top_k: int | None = 
         "agent_model": settings.llm_model,
         "response_model": settings.response_model,
         "relevant_tables": list(relevant_tables),
+        "shortcut_error": shortcut_error,
         "messages": messages,
         "timings_ms": {
             "sql_agent": agent_ms,
