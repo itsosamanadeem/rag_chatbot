@@ -3,17 +3,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://aiuser:aiuser@localhost:5432/testdb"
-    jwt_secret_key: str = "change_me_in_production"
-    jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60
-    embedding_model: str = "mxbai-embed-large"
-    llm_model: str = "qwen3:14b"
-    embed_workers: int = 4
-    ingest_db_batch_size: int = 64
-    insert_rows_per_chunk: int = 200
-    insert_max_chunk_chars: int = 12000
-    ingest_only_dml: bool = True
-    TOP_K: int = 5
+    llm_model: str = "qwen2.5:3b"
+    response_model: str = "llama3.2"
+    llm_temperature: float = 0
+    ollama_keep_alive: str = "10m"
+    ollama_num_ctx: int = 4096
+    ollama_num_gpu: int | None = None
+    ollama_num_thread: int | None = None
+    ollama_num_predict: int = 512
+    ollama_request_timeout_seconds: int = 120
+    sql_agent_top_k: int = 5
+    sql_agent_max_iterations: int = 8
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

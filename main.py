@@ -1,25 +1,37 @@
 from fastapi import FastAPI
-from sqlalchemy import text
+from pydantic import BaseModel, Field
 
-from app.api.auth import router as auth_router
-from app.api.rag import router as rag_router
-from app.db.session import Base, engine
-
-
-app = FastAPI(title="SQL Dump RAG with pgvector + Auth")
+from app.core.config import settings
+from app.services.sql_agent import ask_sql_agent, list_sql_tables
 
 
-@app.on_event("startup")
-def startup_event():
-    with engine.begin() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-    Base.metadata.create_all(bind=engine)
+app = FastAPI(title="Standalone LangChain SQL Agent")
+
+
+class AskRequest(BaseModel):
+    question: str = Field(..., min_length=1)
+    db_url: str | None = None
+    top_k: int | None = Field(default=None, ge=1, le=100)
 
 
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "model": settings.llm_model,
+        "default_database_url": settings.database_url,
+    }
 
 
-app.include_router(auth_router)
-app.include_router(rag_router)
+@app.get("/tables")
+def tables(db_url: str | None = None):
+    return list_sql_tables(db_url)
+
+
+@app.post("/ask")
+def ask(request: AskRequest):
+    return ask_sql_agent(
+        question=request.question,
+        db_url=request.db_url,
+        top_k=request.top_k,
+    )
