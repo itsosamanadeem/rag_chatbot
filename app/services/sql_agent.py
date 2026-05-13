@@ -8,14 +8,12 @@ from langchain.agents import create_agent
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_community.utilities import SQLDatabase
 from langchain_core.messages import HumanMessage, SystemMessage
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.exc import SQLAlchemyError
-from langchain.agents.middleware import HumanInTheLoopMiddleware 
-from langgraph.checkpoint.memory import InMemorySaver 
 
+from langgraph.checkpoint.memory import InMemorySaver
+from app.core.skill_middleware import SkillMiddleware
 from app.core.config import settings
 from app.services.llm import get_llm
-
+from langchain_core.utils.uuid import uuid7
 
 CURRENT_YEAR = 2026
 
@@ -177,37 +175,44 @@ def ask_sql_agent(question: str, db_url: str | None = None, top_k: int | None = 
     table_context = "\n".join(f"- {table}" for table in (table_names))
     agent = create_agent(
         llm,
-        toolkit.get_tools(),
-        system_prompt=_build_system_prompt(db, selected_top_k),
+        # toolkit.get_tools(),
+        system_prompt=(
+            "You are a SQL query assistant that helps users "
+            "write queries against business databases."
+        ),
+        # system_prompt=_build_system_prompt(db, selected_top_k),
+        middleware=[SkillMiddleware()],
+        checkpointer=InMemorySaver(),
     )
     # config = {"configurable": {"thread_id": "1"}}
+    thread_id = str(uuid7())
+    config = {"configurable": {"thread_id": thread_id}}
     result = agent.invoke(
         {"messages": [{"role": "user", "content": question}]},
-        # config=config,
-        config={"recursion_limit": settings.sql_agent_max_iterations * 2},
-        stream_mode="values"
+        config,
+        # stream_mode="values",
     )
     
-    messages = [_message_to_dict(message) for message in result.get("messages", [])]
-    query =  next((message["content"] for message in messages if message["role"] == "tool" and message.get("name") == "sql_db_query"), None)
-    raw_answer = messages[-1]["content"] if messages else ""
-    agent_ms = _ms(agent_started)
-    response_started = perf_counter()
-    answer = _humanize_answer(question, raw_answer, messages)
-    response_ms = _ms(response_started)
+    # messages = [_message_to_dict(message) for message in result.get("messages", [])]
+    # query =  next((message["content"] for message in messages if message["role"] == "tool" and message.get("name") == "sql_db_query"), None)
+    # raw_answer = messages[-1]["content"] if messages else ""
+    # agent_ms = _ms(agent_started)
+    # response_started = perf_counter()
+    # answer = _humanize_answer(question, raw_answer, messages)
+    # response_ms = _ms(response_started)
     return {
-        "answer": answer,
-        "query": query,
-        "raw_answer": raw_answer,
-        "dialect": db.dialect,
-        "agent_model": settings.llm_model,
-        "response_model": settings.response_model,
-        "messages": messages,
-        "timings_ms": {
-            "sql_agent": agent_ms,
-            "response_generation": response_ms,
-            "total": _ms(started),
-        },
+        "answer": result,
+        # "query": query,
+        # "raw_answer": raw_answer,
+        # "dialect": db.dialect,
+        # "agent_model": settings.llm_model,
+        # "response_model": settings.response_model,
+        # "messages": messages,
+        # "timings_ms": {
+        #     "sql_agent": agent_ms,
+        #     "response_generation": response_ms,
+        #     "total": _ms(started),
+        # },
     }
 
 

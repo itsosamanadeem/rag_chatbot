@@ -3,8 +3,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://aiuser:aiuser@localhost:5432/testdb"
-    llm_model: str = "qwen2.5:3b"
-    response_model: str = "qwen2.5:3b"
+    llm_model: str = "qwen3.5:9b"
+    response_model: str = "llama3.2:latest"
     ollama_base_url: str = "http://localhost:11434"
     llm_temperature: float = 0
     ollama_keep_alive: str = "10m"
