@@ -121,10 +121,10 @@ def _select_relevant_tables(question: str, table_names: tuple[str, ...]) -> tupl
 
 
 @lru_cache(maxsize=16)
-def _get_database(db_url: str, include_tables: tuple[str, ...] = ()) -> SQLDatabase:
+def _get_database(db_url: str) -> SQLDatabase:
     kwargs: dict[str, Any] = {"sample_rows_in_table_info": 1}
-    if include_tables:
-        kwargs["include_tables"] = list(include_tables)
+    # if include_tables:
+    #     kwargs["include_tables"] = list(include_tables)
     return SQLDatabase.from_uri(db_url, **kwargs)
 
 
@@ -176,20 +176,21 @@ def ask_sql_agent(question: str, db_url: str | None = None, top_k: int | None = 
     selected_db_url = db_url or settings.database_url
     selected_top_k = top_k or settings.sql_agent_top_k
     table_names = _discover_table_names(selected_db_url)
-    relevant_tables = _select_relevant_tables(question, table_names)
-    db = _get_database(selected_db_url, relevant_tables)
+    # relevant_tables = _select_relevant_tables(question, table_names)
+    db = _get_database(selected_db_url)
     llm = get_llm()
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-    table_context = "\n".join(f"- {table}" for table in (relevant_tables or table_names[:80]))
+    # table_context = "\n".join(f"- {table}" for table in (relevant_tables or table_names[:80]))
     agent = create_agent(
         llm,
         toolkit.get_tools(),
-        system_prompt=_build_system_prompt(db, selected_top_k, table_context),
+        system_prompt=_build_system_prompt(db, selected_top_k, str(table_names)),
     )
     result = agent.invoke(
         {"messages": [{"role": "user", "content": question}]},
         config={"recursion_limit": settings.sql_agent_max_iterations * 2},
     )
+    
     messages = [_message_to_dict(message) for message in result.get("messages", [])]
     raw_answer = messages[-1]["content"] if messages else ""
     agent_ms = _ms(agent_started)
@@ -197,18 +198,18 @@ def ask_sql_agent(question: str, db_url: str | None = None, top_k: int | None = 
     answer = _humanize_answer(question, raw_answer, messages)
     response_ms = _ms(response_started)
     return {
-        "answer": answer,
-        "raw_answer": raw_answer,
-        "dialect": db.dialect,
-        "agent_model": settings.llm_model,
-        "response_model": settings.response_model,
-        "relevant_tables": list(relevant_tables),
-        "messages": messages,
-        "timings_ms": {
-            "sql_agent": agent_ms,
-            "response_generation": response_ms,
-            "total": _ms(started),
-        },
+        "answer": result,
+        # "raw_answer": raw_answer,
+        # "dialect": db.dialect,
+        # "agent_model": settings.llm_model,
+        # "response_model": settings.response_model,
+        # "relevant_tables": list(relevant_tables),
+        # "messages": messages,
+        # "timings_ms": {
+        #     "sql_agent": agent_ms,
+        #     "response_generation": response_ms,
+        #     "total": _ms(started),
+        # },
     }
 
 
