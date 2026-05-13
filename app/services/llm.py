@@ -21,5 +21,6 @@ def get_llm(model: str | None = None) -> ChatOllama:
 
     return ChatOllama(
         model=model or settings.llm_model,
+        base_url=settings.ollama_base_url,
         **options,
     )

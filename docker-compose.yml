@@ -6,10 +6,44 @@ services:
       POSTGRES_USER: aiuser
       POSTGRES_PASSWORD: aiuser
       PGDATA: /var/lib/postgresql/data/pgdata
-    ports:
-      - "5432:5432"
     volumes:
       - ./ai_db-data:/var/lib/postgresql/data/pgdata
+    restart: always
+
+  api:
+    build: .
+    depends_on:
+      - db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      DATABASE_URL: postgresql+psycopg://aiuser:aiuser@db:5432/testdb
+      LLM_MODEL: qwen2.5:3b
+      RESPONSE_MODEL: qwen2.5:3b
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_KEEP_ALIVE: 10m
+      OLLAMA_NUM_CTX: 4096
+      OLLAMA_NUM_PREDICT: 512
+      OLLAMA_REQUEST_TIMEOUT_SECONDS: 120
+      SQL_AGENT_TOP_K: 5
+      SQL_AGENT_MAX_ITERATIONS: 8
+    restart: always
+
+  streamlit:
+    build: .
+    depends_on:
+      - api
+    environment:
+      API_BASE: http://api:8000
+    command:
+      - streamlit
+      - run
+      - streamlit_app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+    ports:
+      - "8501:8501"
     restart: always
 
 volumes:
