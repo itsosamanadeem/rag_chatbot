@@ -4,6 +4,7 @@ from functools import lru_cache
 from time import perf_counter
 from typing import Any
 
+import httpx
 from langchain.agents import create_agent
 from langchain_community.agent_toolkits import SQLDatabaseToolkit
 from langchain_community.utilities import SQLDatabase
@@ -12,7 +13,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from app.core.skill_middleware import SkillMiddleware
 from app.core.config import settings
-from app.services.llm import get_llm
+from app.services.llm import get_llm, log_ollama_gpu_status
 from langchain_core.utils.uuid import uuid7
 
 CURRENT_YEAR = 2026
@@ -92,13 +93,12 @@ def _get_database(db_url: str) -> SQLDatabase:
     return SQLDatabase.from_uri(db_url, **kwargs)
 
 
-def _build_system_prompt(db: SQLDatabase, top_k: int) -> str:
+def _build_system_prompt(db: SQLDatabase) -> str:
     system_prompt = """
         You are an agent designed to interact with a SQL database.
         Given an input question, create a syntactically correct {dialect} query to run,
         then look at the results of the query and return the answer. Unless the user
-        specifies a specific number of examples they wish to obtain, always limit your
-        query to at most {top_k} results.
+        specifies a specific number of examples they wish to obtain.
 
         You can order the results by a relevant column to return the most interesting
         examples in the database. Never query for all the columns from a specific table,
@@ -114,9 +114,14 @@ def _build_system_prompt(db: SQLDatabase, top_k: int) -> str:
         can query. Do NOT skip this step.
 
         Then you should query the schema of the most relevant tables.
+
+        Final-answer rules:
+        - Return only the final user-facing answer.
+        - Do not output internal planning steps, chain-of-thought, or scratchpad text.
+        - If the user asks "this year", use calendar year {current_year}.
         """.format(
             dialect=db.dialect,
-            top_k=top_k,
+            current_year=CURRENT_YEAR,
         )
         
     return system_prompt
@@ -166,53 +171,86 @@ def ask_sql_agent(question: str, db_url: str | None = None, top_k: int | None = 
     started = perf_counter()
     agent_started = perf_counter()
     selected_db_url = db_url or settings.database_url
-    selected_top_k = top_k or settings.sql_agent_top_k
     # relevant_tables = _select_relevant_tables(question, table_names)
     db = _get_database(selected_db_url)
     table_names = _discover_table_names(selected_db_url, db)
+    log_ollama_gpu_status(settings.llm_model)
     llm = get_llm()
     toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-    table_context = "\n".join(f"- {table}" for table in (table_names))
+    tools = toolkit.get_tools()
     agent = create_agent(
         llm,
-        # toolkit.get_tools(),
-        system_prompt=(
-            "You are a SQL query assistant that helps users "
-            "write queries against business databases."
-        ),
-        # system_prompt=_build_system_prompt(db, selected_top_k),
+        tools,
+        system_prompt=_build_system_prompt(db),
         middleware=[SkillMiddleware()],
         checkpointer=InMemorySaver(),
     )
     # config = {"configurable": {"thread_id": "1"}}
     thread_id = str(uuid7())
     config = {"configurable": {"thread_id": thread_id}}
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": question}]},
-        config,
-        # stream_mode="values",
+    try:
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": question}]},
+            config, #type: ignore
+            # stream_mode="values",
+        )
+    except httpx.ReadTimeout:
+        return {
+            "answer": (
+                "The model took too long to respond and timed out. "
+                "Please retry, or increase OLLAMA_REQUEST_TIMEOUT_SECONDS for larger models like qwen3:14b."
+            ),
+            "query": None,
+            "raw_answer": "",
+            "dialect": db.dialect,
+            "agent_model": settings.llm_model,
+            "response_model": settings.response_model,
+            "messages": [],
+            "timings_ms": {
+                "sql_agent": _ms(agent_started),
+                "response_generation": 0.0,
+                "total": _ms(started),
+            },
+            "shortcut_error": "model_timeout",
+        }
+
+    messages = [_message_to_dict(message) for message in result.get("messages", [])]
+    query = next(
+        (
+            message["content"]
+            for message in messages
+            if message["role"] == "tool" and str(message.get("name", "")).startswith("sql_db_query")
+        ),
+        None,
     )
-    
-    # messages = [_message_to_dict(message) for message in result.get("messages", [])]
-    # query =  next((message["content"] for message in messages if message["role"] == "tool" and message.get("name") == "sql_db_query"), None)
-    # raw_answer = messages[-1]["content"] if messages else ""
-    # agent_ms = _ms(agent_started)
-    # response_started = perf_counter()
-    # answer = _humanize_answer(question, raw_answer, messages)
-    # response_ms = _ms(response_started)
+    raw_answer = ""
+    for message in reversed(messages):
+        if message["role"] == "ai" and str(message.get("content", "")).strip():
+            raw_answer = str(message["content"]).strip()
+            break
+    agent_ms = _ms(agent_started)
+    response_started = perf_counter()
+    try:
+        answer = _humanize_answer(question, raw_answer, messages)
+    except httpx.ReadTimeout:
+        answer = raw_answer or (
+            "I retrieved a result but timed out while rewriting it. "
+            "Please increase OLLAMA_REQUEST_TIMEOUT_SECONDS."
+        )
+    response_ms = _ms(response_started)
     return {
-        "answer": result,
-        # "query": query,
-        # "raw_answer": raw_answer,
-        # "dialect": db.dialect,
-        # "agent_model": settings.llm_model,
-        # "response_model": settings.response_model,
-        # "messages": messages,
-        # "timings_ms": {
-        #     "sql_agent": agent_ms,
-        #     "response_generation": response_ms,
-        #     "total": _ms(started),
-        # },
+        "answer": answer,
+        "query": query,
+        "raw_answer": raw_answer,
+        "dialect": db.dialect,
+        "agent_model": settings.llm_model,
+        "response_model": settings.response_model,
+        "messages": messages,
+        "timings_ms": {
+            "sql_agent": agent_ms,
+            "response_generation": response_ms,
+            "total": _ms(started),
+        },
     }
 
 
@@ -225,3 +263,6 @@ def list_sql_tables(db_url: str | None = None) -> dict[str, Any]:
         "tables": list(db.get_usable_table_names()),
         "timings_ms": {"total": _ms(started)},
     }
+
+
+

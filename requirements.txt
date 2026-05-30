@@ -12,3 +12,5 @@ langchain-community
 langchain-ollama
 langgraph
 pymysql
+openai
+pyodbc

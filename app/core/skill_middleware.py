@@ -34,9 +34,9 @@ class SkillMiddleware(AgentMiddleware):
         )
 
         # Append to system message content blocks
-        new_content = list(request.system_message.content_blocks) + [
+        new_content = list(request.system_message.content_blocks) + [ #type: ignore
             {"type": "text", "text": skills_addendum}
         ]
-        new_system_message = SystemMessage(content=new_content)
+        new_system_message = SystemMessage(content=new_content) #type: ignore
         modified_request = request.override(system_message=new_system_message)
         return handler(modified_request)

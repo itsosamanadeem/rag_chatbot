@@ -1,8 +1,15 @@
+import logging
+
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.services.sql_agent import ask_sql_agent, list_sql_tables
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 
 
 app = FastAPI(title="Standalone LangChain SQL Agent")

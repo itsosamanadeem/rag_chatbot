@@ -1,7 +1,10 @@
 ai_db-data/
 .venv/
+.vscode/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 uploads/
+*.tar
+*.tar.gz
